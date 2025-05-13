@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en" >
+<head>
+  <meta charset="UTF-8">
+  <title>YouTube Comment Summarizer</title>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/normalize/5.0.0/normalize.min.css">
+  <link rel="stylesheet" href="/static/style.css">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+</head>
+<body>
+    <header>
+       <h1>YouTube Comment Summarizer</h1>
+    </header>
+
+    <div class="form-container">
+       <form id="youtube-form" class="form">
+          <input type="text" id="youtube-url" name="youtube_url" placeholder="Paste the YouTube link here..." required>
+          <button type="submit" class="start-button">Start</button>
+       </form>
+    </div>
+
+    <div id="loading" class="loading-container" style="display: none;">
+       <div class="loading-spinner"></div>
+       <p>Analyzing comments... This may take a few minutes.</p>
+    </div>
+
+    <div class="tabs" id="results-container" style="display: none;">
+       <input class="input" name="tabs" type="radio" id="tab-1" checked="checked"/>
+       <label class="label" for="tab-1">Summarizer</label>
+       <div class="panel">
+          <h2>Comment Summary</h2>
+          <div id="summary-content" class="content-area"></div>
+       </div>
+
+       <input class="input" name="tabs" type="radio" id="tab-2"/>
+       <label class="label" for="tab-2">Sentiment Analysis</label>
+       <div class="panel">
+          <h2>Sentiment Analysis</h2>
+          <div class="sentiment-container">
+             <div class="sentiment-chart">
+                <img id="sentiment-chart" src="" alt="Sentiment Analysis Chart">
+             </div>
+             <div id="sentiment-summary" class="content-area"></div>
+          </div>
+       </div>
+
+       <input class="input" name="tabs" type="radio" id="tab-3"/>
+       <label class="label" for="tab-3">Word Cloud</label>
+       <div class="panel">
+          <h2>Word Cloud</h2>
+          <div class="wordcloud-container">
+             <img id="wordcloud-image" src="" alt="Word Cloud">
+          </div>
+       </div>
+
+       <input class="input" name="tabs" type="radio" id="tab-4"/>
+       <label class="label" for="tab-4">Ask Questions</label>
+       <div class="panel">
+          <h2>Ask Questions About Comments</h2>
+          <div class="ask-more-container">
+             <textarea id="question" placeholder="Ask a specific question about the comments..."></textarea>
+             <div class="advanced-options">
+                <div class="k-info">
+                   <span id="comment-count-info">Available comments: <b id="total-comment-count">0</b></span>
+                   <br>
+                   <span id="k-guidance" class="guidance-text">Waiting for data...</span>
+                </div>
+                <div class="k-slider-container">
+                   <label class="k-slider-label" title="Higher values include more comments but may be slower">
+                       Comment sample size: <span id="k-value">Auto</span>
+                   </label>
+                   <input type="range" id="k-slider" min="0" max="400" value="0" title="0 = Automatic, higher values = more comments">
+                </div>
+             </div>
+             <button id="ask-button" class="ask-button">Ask</button>
+             <div id="qa-loading" class="loading-container" style="display: none;">
+                <div class="loading-spinner"></div>
+                <p>Finding answer in comments...</p>
+             </div>
+             <div id="answer-stats" class="stats-area" style="display: none;"></div>
+             <div id="answer-content" class="content-area" style="display: none;"></div>
+          </div>
+       </div>
+    </div>
+    <script>
+       document.addEventListener('DOMContentLoaded', function() {
+          const form = document.getElementById('youtube-form');
+          const loadingIndicator = document.getElementById('loading');
+          const resultsContainer = document.getElementById('results-container');
+          const askButton = document.getElementById('ask-button');
+          const qaLoadingIndicator = document.getElementById('qa-loading');
+          const answerContent = document.getElementById('answer-content');
+          const answerStats = document.getElementById('answer-stats');
+          const kSlider = document.getElementById('k-slider');
+          const kValue = document.getElementById('k-value');
+          let currentVideoId = null;
+
+          // Function to calculate optimal k value (matching the Python implementation)
+          function calculateOptimalK(totalComments) {
+              // For very small comment sets (<50), use a higher percentage (60-70%)
+              if (totalComments < 50) {
+                  return Math.max(10, Math.min(Math.floor(totalComments * 0.7), totalComments));
+              }
+
+              // For small comment sets (50-200), scale between 40-30% of total
+              else if (totalComments < 200) {
+                  // Linear scaling from 40% at 50 comments to 30% at 200 comments
+                  const percent = 0.4 - ((totalComments - 50) / 150) * 0.1;
+                  return Math.max(20, Math.min(Math.floor(totalComments * percent), totalComments));
+              }
+
+              // For medium comment sets (200-1000), scale between 30-20% of total
+              else if (totalComments < 1000) {
+                  // Linear scaling from 30% at 200 comments to 20% at 1000 comments
+                  const percent = 0.3 - ((totalComments - 200) / 800) * 0.1;
+                  return Math.max(60, Math.min(Math.floor(totalComments * percent), totalComments));
+              }
+
+              // For large comment sets (1000-5000), scale between 20-10% of total
+              else if (totalComments < 5000) {
+                  // Linear scaling from 20% at 1000 comments to 10% at 5000 comments
+                  const percent = 0.2 - ((totalComments - 1000) / 4000) * 0.1;
+                  return Math.max(200, Math.min(Math.floor(totalComments * percent), 500));
+              }
+
+              // For very large comment sets (>5000), use 10% with a cap at 600
+              else {
+                  return Math.min(Math.floor(totalComments * 0.1), 600);
+              }
+          }
+
+          // Function to update k guidance based on comment count
+          function updateKGuidance(commentCount) {
+              const kGuidance = document.getElementById('k-guidance');
+              const totalCommentCount = document.getElementById('total-comment-count');
+
+              // Update comment count display
+              totalCommentCount.textContent = commentCount;
+
+              // Provide appropriate guidance based on comment count
+              if (commentCount < 50) {
+                  kGuidance.textContent = `For ${commentCount} comments, try values between 10-${Math.min(commentCount, 40)}`;
+              } else if (commentCount < 200) {
+                  kGuidance.textContent = `For ${commentCount} comments, try values between 20-${Math.min(commentCount, 80)}`;
+              } else if (commentCount < 1000) {
+                  kGuidance.textContent = `For ${commentCount} comments, try values between 60-${Math.min(commentCount, 300)}`;
+              } else if (commentCount < 5000) {
+                  kGuidance.textContent = `For ${commentCount} comments, try values between 200-500`;
+              } else {
+                  kGuidance.textContent = `For ${commentCount} comments, try values between 300-600`;
+              }
+          }
+
+          // Initialize k slider based on comment count
+          function initializeKSlider(commentCount) {
+              // Calculate optimal k
+              const optimalK = calculateOptimalK(commentCount);
+
+              // Set slider max based on comment count (with reasonable limits)
+              kSlider.max = Math.min(Math.max(commentCount, 100), 600);
+
+              // Store optimal k for reference
+              kSlider.dataset.optimalK = optimalK;
+
+              // Update initial text
+              kValue.textContent = `Auto (${optimalK})`;
+          }
+
+          // Handle k-slider changes
+          kSlider.addEventListener('input', function() {
+             const val = parseInt(this.value);
+             const optimalK = this.dataset.optimalK || "?";
+             if (val === 0) {
+                kValue.textContent = `Auto (${optimalK})`;
+             } else {
+                kValue.textContent = val;
+             }
+          });
+
+          form.addEventListener('submit', function(e) {
+             e.preventDefault();
+
+             // Show loading indicator
+             loadingIndicator.style.display = 'flex';
+             resultsContainer.style.display = 'none';
+             answerContent.style.display = 'none';
+             answerStats.style.display = 'none';
+
+             // Get the YouTube URL
+             const youtubeUrl = document.getElementById('youtube-url').value;
+
+             // Call the backend
+             analyzeYouTubeComments(youtubeUrl);
+          });
+
+          askButton.addEventListener('click', function() {
+             const question = document.getElementById('question').value;
+             if (question.trim() !== '') {
+                // Show loading indicator
+                qaLoadingIndicator.style.display = 'flex';
+                answerContent.style.display = 'none';
+                answerStats.style.display = 'none';
+
+                // Get k value from slider
+                const sliderValue = parseInt(kSlider.value);
+
+                // Call the backend to answer the question
+                askQuestion(question, sliderValue === 0 ? null : sliderValue);
+             }
+          });
+
+          // Function to call the backend API
+          function analyzeYouTubeComments(youtubeUrl) {
+             // Call the backend API
+             fetch('/api/analyze', {
+                method: 'POST',
+                headers: {
+                   'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ youtube_url: youtubeUrl }),
+             })
+             .then(response => {
+                if (!response.ok) {
+                   throw new Error(`HTTP error! Status: ${response.status}`);
+                }
+                return response.json();
+             })
+             .then(data => {
+                // Store video ID for later use
+                currentVideoId = data.video_id;
+
+                // Process the response data
+                displayResults(data);
+             })
+             .catch(error => {
+                console.error('Error:', error);
+                alert('An error occurred while analyzing the comments: ' + error.message);
+                loadingIndicator.style.display = 'none';
+             });
+          }
+
+          // Function to display the results
+          function displayResults(data) {
+             // Hide loading indicator
+             loadingIndicator.style.display = 'none';
+
+             // Show results container
+             resultsContainer.style.display = 'flex';
+
+             // Update the summary tab
+             document.getElementById('summary-content').innerHTML = formatParagraphs(data.overall_summary);
+
+             // Update the sentiment analysis tab
+             document.getElementById('sentiment-chart').src = data.output_files.sentiment_chart + '?t=' + new Date().getTime();
+             document.getElementById('sentiment-summary').innerHTML = `
+             <div class="summary-section">
+             <strong>Positive Aspects:</strong><br>
+             ${formatBullets(data.positive_summary)}
+             <br><strong>Negative Aspects:</strong><br>
+             ${formatBullets(data.negative_summary)}
+             </div>
+             `;
+
+             // Update the word cloud tab
+             document.getElementById('wordcloud-image').src = data.output_files.wordcloud + '?t=' + new Date().getTime();
+
+             // Update comment count info and initialize k slider for QA section
+             const commentCount = data.comment_count;
+             updateKGuidance(commentCount);
+             initializeKSlider(commentCount);
+
+             // Clear any previous Q&A results
+             document.getElementById('question').value = '';
+             answerContent.innerHTML = '';
+             answerContent.style.display = 'none';
+             answerStats.style.display = 'none';
+          }
+
+          function formatBullets(text) {
+             if (!text) return '';
+             return text
+                .split('\n')
+                .filter(line => line.trim() !== '')
+                .map(line => `<div class="bullet-line">   ${line.trim().replace(/^\*+/, '').trim()}</div>`)
+                .join('');
+          }
+
+          function formatParagraphs(text) {
+             if (!text) return '';
+             return text
+                .split(/\n\s*\n/) // split by empty lines or double newlines
+                .filter(p => p.trim() !== '')
+                .map(p => `<p>${p.trim()}</p>`)
+                .join('');
+          }
+
+          // Function to ask additional questions
+          function askQuestion(question, k = null) {
+             // Prepare request payload
+             const payload = { question: question };
+             if (k !== null) {
+                payload.k = k;
+             }
+
+             fetch('/api/ask', {
+                method: 'POST',
+                headers: {
+                   'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(payload),
+             })
+             .then(response => {
+                if (!response.ok) {
+                   throw new Error(`HTTP error! Status: ${response.status}`);
+                }
+                return response.json();
+             })
+             .then(data => {
+                // Hide loading indicator
+                qaLoadingIndicator.style.display = 'none';
+
+                // Display processing stats if available
+                if (data.processing_time) {
+                   const commentCount = data.comments_total || "?";
+                   const kUsed = data.k_used || "?";
+
+                   answerStats.innerHTML = `
+                       <span class="processing-time">
+                           Used ${kUsed} out of ${commentCount} comments for context.
+                           Processing time: ${data.processing_time}
+                       </span>
+                   `;
+                   answerStats.style.display = 'block';
+                }
+
+                // Display the answer
+                answerContent.innerHTML = formatParagraphs(data.answer);
+                answerContent.style.display = 'block';
+             })
+             .catch(error => {
+                console.error('Error:', error);
+                qaLoadingIndicator.style.display = 'none';
+
+                // Show error message in the answer content area
+                answerContent.innerHTML = `<p class="error-message">Error: ${error.message}. Please try again or reload the page.</p>`;
+                answerContent.style.display = 'block';
+             });
+          }
+
+          // Check database status on page load
+          fetch('/api/status')
+            .then(response => response.json())
+            .then(data => {
+               if (data.database_exists && data.current_video_id) {
+                  console.log(`Database exists for video ID: ${data.current_video_id}`);
+
+                  if (data.metadata && data.metadata.comment_count) {
+                     // Set max value for k-slider based on comment count
+                     const commentCount = data.metadata.comment_count;
+                     console.log(`Found ${commentCount} comments in database`);
+
+                     // Initialize QA interface with comment count
+                     updateKGuidance(commentCount);
+                     initializeKSlider(commentCount);
+                  }
+               }
+            })
+            .catch(err => console.error('Error checking database status:', err));
+       });
+    </script>
+</body>
+</html>
