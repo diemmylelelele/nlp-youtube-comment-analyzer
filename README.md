@@ -53,10 +53,12 @@ Preprocessing steps:
    Download and install Ollama from: https://ollama.com/download
 
 3. Pull the LLaMA 3.2 Model & embedding model
+   
 ```ollama run llama3.2```
+
 ```ollama  mxbai-embed-large```
 
-4. Start the Application
+5. Start the Application
 ```python app.py```
 
 ## Example
